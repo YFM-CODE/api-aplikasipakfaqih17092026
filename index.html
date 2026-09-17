@@ -117,13 +117,20 @@
   .popover label{display:block;font-size:11.5px;font-weight:700;color:var(--text-soft);margin-bottom:6px;text-transform:uppercase;letter-spacing:.02em;}
   .popover select{width:100%;padding:7px 9px;border:1px solid var(--border);border-radius:var(--r-sm);font-size:13px;font-family:inherit;}
 
-  .popover.export-menu{padding:6px;min-width:230px;left:0;right:auto;}
+  .popover.export-menu{
+    padding:6px;min-width:230px;
+    left:auto;right:0;
+    top:auto;bottom:calc(100% + 8px);
+    z-index:9999;
+  }
   .export-option{
     display:flex;align-items:center;gap:10px;width:100%;text-align:left;
     background:transparent;border:none;border-radius:var(--r-sm);
     padding:9px 10px;color:var(--text);
   }
   .export-option:hover{background:var(--blue-bg);}
+  .toolbar{position:relative;z-index:100;}
+  .toolbar-actions{position:relative;z-index:101;}
   .export-option .icon{color:var(--blue-dark);width:17px;height:17px;}
   .export-option span{display:flex;flex-direction:column;gap:1px;}
   .export-option strong{font-size:13px;font-weight:700;}
@@ -459,15 +466,15 @@
         <div class="popover export-menu" id="export-popover">
           <button class="export-option" data-type="csv">
             <svg class="icon" viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
-            <span><strong>CSV</strong><small>Teks dipisah koma</small></span>
+            <span><strong>CSV</strong><small>Kolom rapi & kompatibel Excel</small></span>
           </button>
           <button class="export-option" data-type="xlsx">
             <svg class="icon" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 3v18M3 9h18M3 15h18"/></svg>
-            <span><strong>Excel</strong><small>.xlsx, header &amp; kolom rapi</small></span>
+            <span><strong>Excel</strong><small>.xlsx, format tabel + ringkasan</small></span>
           </button>
           <button class="export-option" data-type="pdf">
             <svg class="icon" viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
-            <span><strong>PDF</strong><small>Siap cetak, tabel bergaris</small></span>
+            <span><strong>PDF</strong><small>A4 landscape, siap cetak</small></span>
           </button>
         </div>
       </div>
@@ -961,27 +968,387 @@ $conn->close();
   }
   window.deleteData = deleteData;
 
-  /* ---------- Export CSV ---------- */
+  /* ---------- Export CSV / Excel / PDF ---------- */
+  function getExportRows(){
+    return filteredData.map(item => ({
+      id: item.id ?? "",
+      name: item.name ?? "",
+      nisn: item.nisn ?? "",
+      ttl: item.ttl ?? "",
+      gender: item.gender ?? "",
+      email: item.email ?? "",
+      address: item.address ?? ""
+    }));
+  }
+
+  function getExportFilename(ext){
+    const date = new Date();
+    const stamp =
+      date.getFullYear() +
+      String(date.getMonth() + 1).padStart(2, "0") +
+      String(date.getDate()).padStart(2, "0") + "_" +
+      String(date.getHours()).padStart(2, "0") +
+      String(date.getMinutes()).padStart(2, "0");
+    return `data_users_${stamp}.${ext}`;
+  }
+
+  function getGenderStats(rows){
+    let male = 0, female = 0;
+    rows.forEach(item => {
+      const cat = genderCategory(item.gender);
+      if (cat === "L") male++;
+      else if (cat === "P") female++;
+    });
+    return { total: rows.length, male, female };
+  }
+
   function exportCSV(){
-    if (filteredData.length === 0){
+    const rows = getExportRows();
+    if (!rows.length){
       showToast("Tidak ada data untuk diekspor.", "error");
       return;
     }
+
     const headers = ["ID","Nama","NISN","TTL","Gender","Email","Alamat"];
-    const rows = filteredData.map(item => [item.id, item.name, item.nisn, item.ttl, item.gender, item.email, item.address]);
-    const csv = [headers, ...rows]
-      .map(row => row.map(v => `"${String(v ?? "").replace(/"/g, '""')}"`).join(","))
-      .join("\n");
-    const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+    const csv = [
+      headers,
+      ...rows.map(item => [item.id, item.name, item.nisn, item.ttl, item.gender, item.email, item.address])
+    ].map(row =>
+      // Titik koma membuat CSV langsung terbagi menjadi kolom di Excel regional Indonesia.
+      row.map(v => `"${String(v ?? "").replace(/"/g, '""')}"`).join(";")
+    ).join("\r\n");
+
+    // BOM membuat UTF-8/aksara Indonesia terbaca baik di Excel.
+    const blob = new Blob(["\uFEFF" + csv], { type: "text/csv;charset=utf-8;" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = "data_users.csv";
+    a.download = getExportFilename("csv");
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
     URL.revokeObjectURL(url);
     showToast("Data berhasil diekspor ke CSV.", "success");
+  }
+
+  async function exportExcel(){
+    const rows = getExportRows();
+    if (!rows.length){
+      showToast("Tidak ada data untuk diekspor.", "error");
+      return;
+    }
+
+    if (typeof ExcelJS === "undefined"){
+      showToast("Library Excel belum termuat. Periksa koneksi internet.", "error");
+      return;
+    }
+
+    try {
+      const workbook = new ExcelJS.Workbook();
+      workbook.creator = "Data Users JSON — ASTS";
+      workbook.created = new Date();
+      workbook.modified = new Date();
+      workbook.properties = {
+        title: "Data Users JSON — ASTS",
+        subject: "Data pengguna dan siswa",
+        company: "ASTS"
+      };
+
+      const sheet = workbook.addWorksheet("Data Users", {
+        views: [{ state: "frozen", ySplit: 6 }],
+        pageSetup: {
+          orientation: "landscape",
+          fitToPage: true,
+          fitToWidth: 1,
+          fitToHeight: 0,
+          paperSize: 9,
+          margins: { left: 0.25, right: 0.25, top: 0.5, bottom: 0.5, header: 0.2, footer: 0.2 }
+        }
+      });
+
+      sheet.mergeCells("A1:G1");
+      const title = sheet.getCell("A1");
+      title.value = "DATA USERS — ASTS";
+      title.font = { name: "Arial", size: 18, bold: true, color: { argb: "FFFFFFFF" } };
+      title.alignment = { horizontal: "center", vertical: "middle" };
+      title.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "2F6FED" } };
+      sheet.getRow(1).height = 30;
+
+      sheet.mergeCells("A2:G2");
+      const subtitle = sheet.getCell("A2");
+      subtitle.value = "Manajemen data siswa & pengguna melalui RESTful JSON API";
+      subtitle.font = { name: "Arial", size: 10, italic: true, color: { argb: "667085" } };
+      subtitle.alignment = { horizontal: "center", vertical: "middle" };
+      sheet.getRow(2).height = 20;
+
+      const stats = getGenderStats(rows);
+      sheet.mergeCells("A3:G3");
+      const info = sheet.getCell("A3");
+      info.value = `Total: ${stats.total}  |  Laki-laki: ${stats.male}  |  Perempuan: ${stats.female}  |  Diekspor: ${new Date().toLocaleString("id-ID")}`;
+      info.font = { name: "Arial", size: 9, color: { argb: "475467" } };
+      info.alignment = { horizontal: "left", vertical: "middle" };
+      sheet.getRow(3).height = 19;
+
+      sheet.mergeCells("A4:G4");
+      const filterInfo = sheet.getCell("A4");
+      const filterText = [
+        searchTerm ? `Pencarian: "${searchTerm}"` : "Pencarian: semua",
+        genderFilter ? `Gender: ${genderFilter === "L" ? "Laki-laki" : "Perempuan"}` : "Gender: semua"
+      ].join("  |  ");
+      filterInfo.value = filterText;
+      filterInfo.font = { name: "Arial", size: 9, color: { argb: "667085" } };
+      filterInfo.alignment = { horizontal: "left", vertical: "middle" };
+      sheet.getRow(4).height = 18;
+
+      sheet.mergeCells("A5:G5");
+      sheet.getCell("A5").value = "Data hasil filter saat tombol ekspor ditekan";
+      sheet.getCell("A5").font = { name: "Arial", size: 9, italic: true, color: { argb: "98A2B3" } };
+      sheet.getRow(5).height = 18;
+
+      const headers = ["ID","NAMA","NISN","TTL","GENDER","EMAIL","ALAMAT"];
+      const headerRow = sheet.addRow(headers);
+      headerRow.height = 24;
+      headerRow.eachCell(cell => {
+        cell.font = { name: "Arial", size: 10, bold: true, color: { argb: "FFFFFFFF" } };
+        cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "1D4ED8" } };
+        cell.alignment = { horizontal: "center", vertical: "middle", wrapText: true };
+        cell.border = {
+          top: { style: "thin", color: { argb: "D0D5DD" } },
+          bottom: { style: "thin", color: { argb: "D0D5DD" } },
+          left: { style: "thin", color: { argb: "D0D5DD" } },
+          right: { style: "thin", color: { argb: "D0D5DD" } }
+        };
+      });
+
+      rows.forEach((item, index) => {
+        const row = sheet.addRow([
+          item.id, item.name, item.nisn, item.ttl,
+          item.gender, item.email, item.address
+        ]);
+        row.height = 28;
+
+        row.eachCell(cell => {
+          cell.font = { name: "Arial", size: 10, color: { argb: "101828" } };
+          cell.alignment = { vertical: "top", wrapText: true };
+          cell.border = {
+            top: { style: "hair", color: { argb: "E5E8EE" } },
+            bottom: { style: "hair", color: { argb: "E5E8EE" } },
+            left: { style: "hair", color: { argb: "E5E8EE" } },
+            right: { style: "hair", color: { argb: "E5E8EE" } }
+          };
+        });
+
+        if (index % 2 === 1){
+          row.eachCell(cell => {
+            cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "F8FAFC" } };
+          });
+        }
+
+        row.getCell(1).alignment = { horizontal: "center", vertical: "top" };
+        row.getCell(3).alignment = { horizontal: "center", vertical: "top" };
+        row.getCell(5).alignment = { horizontal: "center", vertical: "top", wrapText: true };
+      });
+
+      sheet.columns = [
+        { key: "id", width: 9 },
+        { key: "name", width: 28 },
+        { key: "nisn", width: 16 },
+        { key: "ttl", width: 30 },
+        { key: "gender", width: 16 },
+        { key: "email", width: 32 },
+        { key: "address", width: 45 }
+      ];
+
+      sheet.autoFilter = { from: "A6", to: `G${6 + rows.length}` };
+      sheet.printTitlesRow = "6:6";
+      sheet.pageSetup.printArea = `A1:G${6 + rows.length}`;
+      sheet.headerFooter.oddFooter.center.text = "Halaman &P dari &N";
+      sheet.headerFooter.oddFooter.right.text = "ASTS";
+      sheet.sheetProperties.pageSetUpPr = { fitToPage: true };
+
+      // Metadata sheet untuk dokumentasi ekspor.
+      const meta = workbook.addWorksheet("Ringkasan");
+      meta.columns = [{ width: 24 }, { width: 60 }];
+      meta.addRow(["RINGKASAN EKSPOR", ""]);
+      meta.mergeCells("A1:B1");
+      meta.getCell("A1").font = { name: "Arial", size: 16, bold: true, color: { argb: "FFFFFFFF" } };
+      meta.getCell("A1").fill = { type: "pattern", pattern: "solid", fgColor: { argb: "2F6FED" } };
+      meta.getCell("A1").alignment = { horizontal: "center" };
+      meta.addRows([
+        ["Total data", stats.total],
+        ["Laki-laki", stats.male],
+        ["Perempuan", stats.female],
+        ["Pencarian", searchTerm || "Semua"],
+        ["Filter gender", genderFilter ? (genderFilter === "L" ? "Laki-laki" : "Perempuan") : "Semua"],
+        ["Waktu ekspor", new Date().toLocaleString("id-ID")],
+        ["Sumber", "data_json.php"]
+      ]);
+      meta.getColumn(1).eachCell((cell, i) => {
+        if (i > 1) cell.font = { name: "Arial", bold: true, color: { argb: "475467" } };
+      });
+      meta.eachRow((row, i) => {
+        if (i > 1) {
+          row.eachCell(cell => {
+            cell.border = {
+              bottom: { style: "thin", color: { argb: "E5E8EE" } }
+            };
+            cell.alignment = { vertical: "middle", wrapText: true };
+          });
+        }
+      });
+
+      const buffer = await workbook.xlsx.writeBuffer();
+      const blob = new Blob([buffer], {
+        type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+      });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = getExportFilename("xlsx");
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+
+      showToast("Excel berhasil dibuat dengan format rapi.", "success");
+    } catch (error) {
+      console.error(error);
+      showToast("Gagal membuat file Excel.", "error");
+    }
+  }
+
+  function exportPDF(){
+    const rows = getExportRows();
+    if (!rows.length){
+      showToast("Tidak ada data untuk diekspor.", "error");
+      return;
+    }
+
+    if (!window.jspdf || typeof window.jspdf.jsPDF !== "function"){
+      showToast("Library PDF belum termuat. Periksa koneksi internet.", "error");
+      return;
+    }
+
+    try {
+      const { jsPDF } = window.jspdf;
+      const doc = new jsPDF({
+        orientation: "landscape",
+        unit: "mm",
+        format: "a4",
+        compress: true
+      });
+
+      const stats = getGenderStats(rows);
+      const generatedAt = new Date().toLocaleString("id-ID");
+
+      // Header profesional.
+      doc.setFillColor(47, 111, 237);
+      doc.roundedRect(10, 9, 277, 23, 3, 3, "F");
+
+      doc.setTextColor(255, 255, 255);
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(17);
+      doc.text("DATA USERS — ASTS", 18, 19);
+
+      doc.setFont("helvetica", "normal");
+      doc.setFontSize(8.5);
+      doc.text("Manajemen data siswa & pengguna melalui RESTful JSON API", 18, 26);
+
+      doc.setFontSize(8);
+      doc.text(`Diekspor: ${generatedAt}`, 278, 19, { align: "right" });
+      doc.text("Sumber: data_json.php", 278, 26, { align: "right" });
+
+      // Ringkasan.
+      doc.setTextColor(71, 84, 103);
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(9);
+      doc.text(`Total ${stats.total}`, 12, 39);
+      doc.text(`Laki-laki ${stats.male}`, 52, 39);
+      doc.text(`Perempuan ${stats.female}`, 98, 39);
+
+      doc.setFont("helvetica", "normal");
+      doc.setTextColor(102, 112, 133);
+      const filterText = [
+        searchTerm ? `Pencarian: "${searchTerm}"` : "Pencarian: semua",
+        genderFilter ? `Gender: ${genderFilter === "L" ? "Laki-laki" : "Perempuan"}` : "Gender: semua"
+      ].join("  |  ");
+      doc.text(filterText, 278, 39, { align: "right" });
+
+      const body = rows.map(item => [
+        String(item.id),
+        String(item.name),
+        String(item.nisn),
+        String(item.ttl),
+        String(item.gender),
+        String(item.email),
+        String(item.address)
+      ]);
+
+      if (typeof doc.autoTable !== "function"){
+        throw new Error("jsPDF AutoTable belum termuat.");
+      }
+
+      doc.autoTable({
+        startY: 44,
+        head: [["ID","NAMA","NISN","TTL","GENDER","EMAIL","ALAMAT"]],
+        body,
+        theme: "grid",
+        margin: { left: 10, right: 10, top: 44, bottom: 16 },
+        tableWidth: "auto",
+        styles: {
+          font: "helvetica",
+          fontSize: 7.5,
+          cellPadding: 2.2,
+          textColor: [16, 24, 40],
+          lineColor: [220, 224, 230],
+          lineWidth: 0.2,
+          valign: "top",
+          overflow: "linebreak"
+        },
+        headStyles: {
+          fillColor: [29, 78, 216],
+          textColor: [255, 255, 255],
+          fontStyle: "bold",
+          fontSize: 7.5,
+          halign: "center",
+          valign: "middle",
+          cellPadding: 2.5
+        },
+        alternateRowStyles: {
+          fillColor: [248, 250, 252]
+        },
+        columnStyles: {
+          0: { cellWidth: 13, halign: "center" },
+          1: { cellWidth: 45 },
+          2: { cellWidth: 25, halign: "center" },
+          3: { cellWidth: 48 },
+          4: { cellWidth: 28, halign: "center" },
+          5: { cellWidth: 52 },
+          6: { cellWidth: "auto" }
+        },
+        didDrawPage: function(data){
+          const pageWidth = doc.internal.pageSize.getWidth();
+          const pageHeight = doc.internal.pageSize.getHeight();
+
+          doc.setFont("helvetica", "normal");
+          doc.setFontSize(7.5);
+          doc.setTextColor(152, 162, 179);
+          doc.text("Data Users JSON — ASTS", 10, pageHeight - 8);
+          doc.text(
+            `Halaman ${doc.internal.getNumberOfPages()}`,
+            pageWidth - 10,
+            pageHeight - 8,
+            { align: "right" }
+          );
+        }
+      });
+
+      doc.save(getExportFilename("pdf"));
+      showToast("PDF berhasil dibuat dan siap dicetak.", "success");
+    } catch (error) {
+      console.error(error);
+      showToast("Gagal membuat file PDF.", "error");
+    }
   }
 
   /* ---------- Wire up events ---------- */
@@ -1026,7 +1393,35 @@ $conn->close();
 
   document.getElementById("btn-refresh").addEventListener("click", loadData);
   document.getElementById("btn-refresh-top").addEventListener("click", loadData);
-  document.getElementById("btn-export").addEventListener("click", exportCSV);
+  document.getElementById("btn-export").addEventListener("click", (e) => {
+    e.stopPropagation();
+    document.getElementById("export-popover").classList.toggle("open");
+  });
+
+  document.querySelectorAll("#export-popover .export-option").forEach(option => {
+    option.addEventListener("click", async (e) => {
+      e.stopPropagation();
+      const type = option.dataset.type;
+      document.getElementById("export-popover").classList.remove("open");
+
+      if (type === "csv") exportCSV();
+      else if (type === "xlsx") await exportExcel();
+      else if (type === "pdf") exportPDF();
+    });
+  });
+
+  document.addEventListener("click", (e) => {
+    const exportPopover = document.getElementById("export-popover");
+    const exportButton = document.getElementById("btn-export");
+    if (
+      exportPopover.classList.contains("open") &&
+      !exportPopover.contains(e.target) &&
+      e.target !== exportButton &&
+      !exportButton.contains(e.target)
+    ){
+      exportPopover.classList.remove("open");
+    }
+  });
   document.getElementById("btn-prev").addEventListener("click", prevPage);
   document.getElementById("btn-next").addEventListener("click", nextPage);
 
