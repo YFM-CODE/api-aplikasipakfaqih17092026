@@ -1,7 +1,7 @@
 <?php
 header("Access-Control-Allow-Origin: *");
 header("Content-Type: application/json; charset=UTF-8");
-header("Access-Control-Allow-Methods: POST");
+header("Access-Control-Allow-Methods: GET, POST, PUT, DELETE");
 header("Access-Control-Allow-Headers: Content-Type, Access-Control-Allow-Headers, Authorization, X-Requested-With");
 
 $host = "localhost";
@@ -12,74 +12,60 @@ $db   = "ujian_asts";
 $conn = new mysqli($host, $user, $pass, $db);
 
 if ($conn->connect_error) {
-    die(json_encode(["success" => false, "message" => "Koneksi database gagal."]));
+    die(json_encode(["message" => "Koneksi gagal: " . $conn->connect_error]));
 }
 
-$data = json_decode(file_get_contents("php://input"), true);
-$action = isset($_GET['action']) ? $_GET['action'] : '';
+$method = $_SERVER['REQUEST_METHOD'];
 
-if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    if ($action === 'register') {
-        $username = trim($data['username'] ?? '');
-        $password = trim($data['password'] ?? '');
-
-        if (empty($username) || empty($password)) {
-            echo json_encode(["success" => false, "message" => "Username dan Password tidak boleh kosong!"]);
-            exit;
+switch ($method) {
+    case 'GET':
+        $sql = "SELECT * FROM users";
+        $result = $conn->query($sql);
+        $users = [];
+        while ($row = $result->fetch_assoc()) {
+            $users[] = $row;
         }
+        echo json_encode($users);
+        break;
 
-        // Cek apakah username sudah terdaftar
-        $checkStmt = $conn->prepare("SELECT id FROM admins WHERE username = ?");
-        $checkStmt->bind_param("s", $username);
-        $checkStmt->execute();
-        if ($checkStmt->get_result()->num_rows > 0) {
-            echo json_encode(["success" => false, "message" => "Username sudah digunakan!"]);
-            exit;
-        }
-
-        // Hash password demi keamanan
-        $hashedPassword = password_hash($password, PASSWORD_BCRYPT);
-        $stmt = $conn->prepare("INSERT INTO admins (username, password) VALUES (?, ?)");
-        $stmt->bind_param("ss", $username, $hashedPassword);
-
-        if ($stmt->execute()) {
-            echo json_encode(["success" => true, "message" => "Registrasi Admin berhasil! Silakan login."]);
-        } else {
-            echo json_encode(["success" => false, "message" => "Gagal meregistrasi Admin."]);
-        }
-    } 
-    elseif ($action === 'login') {
-        $username = trim($data['username'] ?? '');
-        $password = trim($data['password'] ?? '');
-
-        if (empty($username) || empty($password)) {
-            echo json_encode(["success" => false, "message" => "Username dan Password harus diisi!"]);
-            exit;
-        }
-
-        $stmt = $conn->prepare("SELECT id, username, password FROM admins WHERE username = ?");
-        $stmt->bind_param("s", $username);
-        $stmt->execute();
-        $result = $stmt->get_result();
-
-        if ($result->num_rows === 1) {
-            $admin = $result->fetch_assoc();
-            if (password_verify($password, $admin['password'])) {
-                // Buat token sesi sederhana
-                $token = bin2hex(random_bytes(16));
-                echo json_encode([
-                    "success" => true,
-                    "message" => "Login berhasil!",
-                    "token" => $token,
-                    "username" => $admin['username']
-                ]);
+    case 'POST':
+        $data = json_decode(file_get_contents("php://input"), true);
+        if (isset($data['name'], $data['nisn'], $data['ttl'], $data['gender'], $data['email'], $data['address'])) {
+            $stmt = $conn->prepare("INSERT INTO users (name, nisn, ttl, gender, email, address) VALUES (?, ?, ?, ?, ?, ?)");
+            $stmt->bind_param("ssssss", $data['name'], $data['nisn'], $data['ttl'], $data['gender'], $data['email'], $data['address']);
+            if ($stmt->execute()) {
+                echo json_encode(["message" => "Data berhasil ditambahkan"]);
             } else {
-                echo json_encode(["success" => false, "message" => "Password salah!"]);
+                echo json_encode(["message" => "Gagal menambah data"]);
             }
-        } else {
-            echo json_encode(["success" => false, "message" => "Username tidak ditemukan!"]);
         }
-    }
+        break;
+
+    case 'PUT':
+        $data = json_decode(file_get_contents("php://input"), true);
+        if (isset($data['id'], $data['name'], $data['nisn'], $data['ttl'], $data['gender'], $data['email'], $data['address'])) {
+            $stmt = $conn->prepare("UPDATE users SET name=?, nisn=?, ttl=?, gender=?, email=?, address=? WHERE id=?");
+            $stmt->bind_param("ssssssi", $data['name'], $data['nisn'], $data['ttl'], $data['gender'], $data['email'], $data['address'], $data['id']);
+            if ($stmt->execute()) {
+                echo json_encode(["message" => "Data berhasil diperbarui"]);
+            } else {
+                echo json_encode(["message" => "Gagal memperbarui data"]);
+            }
+        }
+        break;
+
+    case 'DELETE':
+        $data = json_decode(file_get_contents("php://input"), true);
+        if (isset($data['id'])) {
+            $stmt = $conn->prepare("DELETE FROM users WHERE id=?");
+            $stmt->bind_param("i", $data['id']);
+            if ($stmt->execute()) {
+                echo json_encode(["message" => "Data berhasil dihapus"]);
+            } else {
+                echo json_encode(["message" => "Gagal menghapus data"]);
+            }
+        }
+        break;
 }
 
 $conn->close();
